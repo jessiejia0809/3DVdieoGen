@@ -1,96 +1,84 @@
 import * as THREE from "three";
 
-/**
- * STEP 2 GOAL:
- * - Draw a field of hexagon "carriers" in a planar layout.
- * - Keep it simple: no motion yet.
- *
- * Later steps will add:
- * - sequencing (activation schedule)
- * - rotation direction and speed
- * - connectors / yarn paths
- */
-
-// ---------- Basic three.js setup ----------
+// Basic three.js setup (3D perspective)
 const canvas = document.querySelector("#c");
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.shadowMap.enabled = true;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xffffff);
+scene.background = new THREE.Color(0xf6f8fb);
 
-// Use an orthographic camera for a "diagram/simulation" look (like your image)
-const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 100);
-camera.position.set(0, 0, 10);
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(0, -24, 12);
+camera.up.set(0, 0, 1);
 camera.lookAt(0, 0, 0);
 
-// Simple light (MeshBasicMaterial doesn’t need it, but good to have if you switch later)
-scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+// Lights
+scene.add(new THREE.HemisphereLight(0xffffff, 0xa0a0a0, 0.6));
+const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+dir.position.set(8, 8, 14);
+dir.castShadow = true;
+scene.add(dir);
 
-// ---------- Hex geometry helpers ----------
-function makeHexShape(radius = 1) {
-  // Flat hex in XY plane
+// Hex helpers
+function makeHexShape(radius = 1, pinch = 0.05) {
   const shape = new THREE.Shape();
+  const verts = [];
   for (let i = 0; i < 6; i++) {
-    const a = (Math.PI / 3) * i + Math.PI / 6; // rotate so it "sits flat" on top
-    const x = radius * Math.cos(a);
-    const y = radius * Math.sin(a);
-    if (i === 0) shape.moveTo(x, y);
-    else shape.lineTo(x, y);
+    const a = (Math.PI / 3) * i + Math.PI / 6;
+    verts.push({ x: radius * Math.cos(a), y: radius * Math.sin(a) });
   }
-  shape.closePath();
+  verts.forEach((v, i) => {
+    const next = verts[(i + 1) % 6];
+    const mx = (v.x + next.x) / 2;
+    const my = (v.y + next.y) / 2;
+    const insetX = mx * (1 - pinch);
+    const insetY = my * (1 - pinch);
+    if (i === 0) shape.moveTo(v.x, v.y);
+    shape.quadraticCurveTo(insetX, insetY, next.x, next.y);
+  });
   return shape;
 }
 
-// Axial hex coords (q,r) -> 2D pixel coords (x,y)
 function axialToXY(q, r, size) {
-  // pointy-top axial coordinate system
   const x = size * Math.sqrt(3) * (q + r / 2);
   const y = size * (3 / 2) * r;
   return { x, y };
 }
 
-// Generate a blob-like set of axial coords to approximate the “patch” in your image
-function generateHexBlob(radius = 3) {
+function generateHexBlob(radius = 1) {
   const coords = [];
   for (let q = -radius; q <= radius; q++) {
     const r1 = Math.max(-radius, -q - radius);
     const r2 = Math.min(radius, -q + radius);
-    for (let r = r1; r <= r2; r++) {
-      coords.push({ q, r });
-    }
+    for (let r = r1; r <= r2; r++) coords.push({ q, r });
   }
-
-  // Optional: remove a few to create an irregular boundary (more like your screenshot)
-  // Adjust/remove these later to match your exact layout.
-  const removeSet = new Set([
-    "3,0", "3,-1", "2,2", "-3,1", "-2,3"
-  ]);
-  return coords.filter(({ q, r }) => !removeSet.has(`${q},${r}`));
+  return coords;
 }
 
-// ---------- Build the carrier field ----------
-const carrierGroup = new THREE.Group();
-scene.add(carrierGroup);
-
-const HEX_SIZE = 0.95;              // overall carrier size
-const HEX_GAP = 0.06;               // spacing between carriers
-const hexRadius = HEX_SIZE;         // shape radius
-const shape = makeHexShape(hexRadius);
-const geometry = new THREE.ShapeGeometry(shape);
-
-// Carrier fill material (match later with your palette)
-const carrierMaterial = new THREE.MeshBasicMaterial({
-  color: 0xbddc6a, // light green-ish
+// Scene params
+const HEX_SIZE = 1.1;
+const HEX_GAP = 0.08;
+const HEX_HEIGHT = 0.35;
+const shape = makeHexShape(HEX_SIZE);
+const carrierGeometry = new THREE.ExtrudeGeometry(shape, {
+  depth: HEX_HEIGHT,
+  bevelEnabled: false,
 });
+carrierGeometry.translate(0, 0, -HEX_HEIGHT / 2); // center on z
 
-// (Optional) outline for readability
+const carrierMaterial = new THREE.MeshStandardMaterial({ color: 0xbddc6a, roughness: 0.55, metalness: 0.05 });
 const outlineMaterial = new THREE.LineBasicMaterial({ color: 0x2b2b2b });
 
-// Keep the field small (<10 carriers) for clarity
-const coords = generateHexBlob(1); // center + 6 neighbors = 7 carriers
+const rigGroup = new THREE.Group();
+scene.add(rigGroup);
 
-// Build carriers and store graph data
+const carrierGroup = new THREE.Group();
+rigGroup.add(carrierGroup);
+
+const coords = generateHexBlob(1); // 7 carriers
 const carriers = [];
 const carrierByKey = new Map();
 const keyFor = (q, r) => `${q},${r}`;
@@ -99,41 +87,33 @@ coords.forEach(({ q, r }) => {
   const { x, y } = axialToXY(q, r, HEX_SIZE + HEX_GAP);
   const key = keyFor(q, r);
 
-  const mesh = new THREE.Mesh(geometry, carrierMaterial);
-  mesh.position.set(x, y, 0);
-  carrierGroup.add(mesh);
+  const node = new THREE.Group();
+  node.position.set(x, y, 0);
+  carrierGroup.add(node);
 
-  // Outline
-  const edges = new THREE.EdgesGeometry(geometry);
+  const mesh = new THREE.Mesh(carrierGeometry, carrierMaterial);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  node.add(mesh);
+
+  const edges = new THREE.EdgesGeometry(carrierGeometry);
   const outline = new THREE.LineSegments(edges, outlineMaterial);
-  outline.position.copy(mesh.position);
-  carrierGroup.add(outline);
+  node.add(outline);
 
-  // Small “center dot” like your image
-  const dot = new THREE.Mesh(
-    new THREE.CircleGeometry(0.08, 16),
-    new THREE.MeshBasicMaterial({ color: 0x2d5b2a })
-  );
-  dot.position.set(x, y, 0.01);
-  carrierGroup.add(dot);
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), new THREE.MeshStandardMaterial({ color: 0x2d5b2a }));
+  dot.position.set(0, 0, HEX_HEIGHT / 2 + 0.02);
+  node.add(dot);
 
-  // Orientation marker: small dot near the "top" edge to show facing direction
-  const orientDot = new THREE.Mesh(
-    new THREE.CircleGeometry(0.05, 12),
-    new THREE.MeshBasicMaterial({ color: 0x1f3b1f })
-  );
-  const orientOffset = hexRadius * 0.7;
-  orientDot.position.set(x, y + orientOffset, 0.02);
-  carrierGroup.add(orientDot);
+  const orientDot = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 12), new THREE.MeshStandardMaterial({ color: 0x1f3b1f }));
+  const orientOffset = HEX_SIZE * 0.35;
+  orientDot.position.set(orientOffset, 0, HEX_HEIGHT / 2 + 0.02);
+  node.add(orientDot);
 
-  carriers.push({ q, r, x, y, key, mesh });
+  carriers.push({ q, r, x, y, key, group: node, rotation: 0 });
   carrierByKey.set(key, carriers[carriers.length - 1]);
 });
 
-// Center the group in view
-carrierGroup.position.set(0, 0, 0);
-
-// ---------- Adjacency graph + stitch edges ----------
+// Adjacency map
 const neighborDirs = [
   { dq: 1, dr: 0 },
   { dq: 1, dr: -1 },
@@ -143,102 +123,209 @@ const neighborDirs = [
   { dq: 0, dr: 1 },
 ];
 
-const edgeGroup = new THREE.Group();
-scene.add(edgeGroup);
+const textileMaterial = new THREE.MeshStandardMaterial({ color: 0x9b59b6, roughness: 0.35, metalness: 0.05 });
+const SIDE_NORMAL_ANGLES = [0, Math.PI / 3, (2 * Math.PI) / 3, Math.PI, (4 * Math.PI) / 3, (5 * Math.PI) / 3];
+const MID_DIST = HEX_SIZE * Math.cos(Math.PI / 6);
 
-const textileMaterial = new THREE.MeshBasicMaterial({ color: 0x9b59b6 }); // purple textile segments
-const hiddenMaterial = new THREE.MeshBasicMaterial({ visible: false });
-
-const edges = [];
+const neighbors = new Map();
+carriers.forEach((c) => neighbors.set(c.key, []));
 carriers.forEach(({ q, r, x, y, key }) => {
   neighborDirs.forEach(({ dq, dr }) => {
     const nq = q + dq;
     const nr = r + dr;
     const neighborKey = keyFor(nq, nr);
     if (!carrierByKey.has(neighborKey)) return;
-
-    // enforce single creation per pair
-    if (key > neighborKey) return;
-
-    const neighbor = carrierByKey.get(neighborKey);
-    const dx = neighbor.x - x;
-    const dy = neighbor.y - y;
-    const len = Math.hypot(dx, dy);
-    const midX = (x + neighbor.x) / 2;
-    const midY = (y + neighbor.y) / 2;
-    const angle = Math.atan2(dy, dx);
-
-    // Short textile segment centered in the gap
-    const barThickness = 0.2;
-    const barLength = len * 0.55;
-    const bar = new THREE.Mesh(
-      new THREE.BoxGeometry(barLength, barThickness, 0.02),
-      hiddenMaterial
-    );
-    bar.position.set(midX, midY, 0.015);
-    // Rotate to be parallel to the shared hex edge (perpendicular to center-to-center line)
-    bar.rotation.z = angle + Math.PI / 2;
-    edgeGroup.add(bar);
-
-    edges.push({
-      key: `${key}|${neighborKey}`,
-      a: key,
-      b: neighborKey,
-      mesh: bar,
-    });
+    neighbors.get(key).push(neighborKey);
   });
 });
 
-// Toggle state for edges: textile present (purple) vs empty (hidden)
-function setEdgeStates({ connected = [] }) {
-  const connectedSet = new Set(connected);
-  edges.forEach((edge) => {
-    edge.mesh.material = connectedSet.has(edge.key)
-      ? textileMaterial
-      : hiddenMaterial;
+function nearestSideIndex(vec) {
+  const len = Math.hypot(vec.x, vec.y) || 1;
+  const nx = vec.x / len;
+  const ny = vec.y / len;
+  let bestIdx = 0;
+  let bestDot = -Infinity;
+  SIDE_NORMAL_ANGLES.forEach((ang, idx) => {
+    const sx = Math.cos(ang);
+    const sy = Math.sin(ang);
+    const dot = sx * nx + sy * ny;
+    if (dot > bestDot) {
+      bestDot = dot;
+      bestIdx = idx;
+    }
   });
+  return bestIdx;
 }
 
-// Static state: show exactly one textile segment (first edge) and no animation
-const initialEdge = edges[0]?.key ? [edges[0].key] : [];
-setEdgeStates({ connected: initialEdge });
-
-// Fit camera bounds to content
-function fitCameraToGroup(group, padding = 1.2) {
-  const box = new THREE.Box3().setFromObject(group);
-const size = new THREE.Vector3();
-const center = new THREE.Vector3();
-box.getSize(size);
-box.getCenter(center);
-
-const halfW = (size.x / 2) * padding;
-const halfH = (size.y / 2) * padding;
-
-camera.left = -halfW;
-camera.right = halfW;
-camera.top = halfH;
-camera.bottom = -halfH;
-camera.near = 0.1;
-camera.far = 100;
-camera.position.set(center.x, center.y, 10);
-camera.lookAt(center.x, center.y, 0);
-camera.updateProjectionMatrix();
+function sideNormal(carrier, sideIdx) {
+  const ang = SIDE_NORMAL_ANGLES[sideIdx] + carrier.rotation;
+  return { nx: Math.cos(ang), ny: Math.sin(ang), ang };
 }
-fitCameraToGroup(carrierGroup);
 
-// ---------- Resize ----------
-function onResize() {
+function sideMidpoint(carrier, sideIdx) {
+  const n = sideNormal(carrier, sideIdx);
+  return {
+    midX: carrier.x + n.nx * MID_DIST,
+    midY: carrier.y + n.ny * MID_DIST,
+    tangentAngle: n.ang + Math.PI / 2,
+    normal: n,
+  };
+}
+
+// Single rod that retargets to the best-facing neighbor of its anchor side
+const rodLength = HEX_SIZE * 1.05;
+const rodThickness = 0.18;
+const rodGeom = new THREE.BoxGeometry(rodLength, rodThickness, 0.05);
+const rodMesh = new THREE.Mesh(rodGeom, textileMaterial);
+rodMesh.castShadow = true;
+rodMesh.receiveShadow = true;
+scene.add(rodMesh);
+
+// Yarn anchor point above center and a line from anchor to rod center
+const yarnAnchor = new THREE.Vector3(0, 0, 3);
+const yarnMat = new THREE.LineBasicMaterial({ color: 0x6e8f69, linewidth: 30 });
+let yarnLine = null;
+function updateYarnLine() {
+  const points = [yarnAnchor.clone(), rod.mesh.position.clone()];
+  const geo = new THREE.BufferGeometry().setFromPoints(points);
+  if (yarnLine) {
+    yarnLine.geometry.dispose();
+    yarnLine.geometry = geo;
+  } else {
+    yarnLine = new THREE.Line(geo, yarnMat);
+    scene.add(yarnLine);
+  }
+}
+
+const rod = {
+  anchor: carriers[0] ?? null,
+  anchorSideIdx: 0,
+  mesh: rodMesh,
+};
+
+if (rod.anchor) {
+  // pick a side that actually faces a neighbor initially
+  const neighborKeys = neighbors.get(rod.anchor.key) || [];
+  if (neighborKeys.length > 0) {
+    const nk = neighborKeys[0];
+    const n = carrierByKey.get(nk);
+    const dir = { x: n.x - rod.anchor.x, y: n.y - rod.anchor.y };
+    rod.anchorSideIdx = nearestSideIndex(dir);
+  }
+}
+
+function updateRod() {
+  if (!rod.anchor) {
+    rod.mesh.visible = false;
+    return;
+  }
+  const anchor = rod.anchor;
+  const anchorSide = sideMidpoint(anchor, rod.anchorSideIdx);
+  const neighborKeys = neighbors.get(anchor.key) || [];
+  let best = null;
+  neighborKeys.forEach((k) => {
+    const nb = carrierByKey.get(k);
+    const dx = nb.x - anchor.x;
+    const dy = nb.y - anchor.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-3) return;
+    const dir = { x: dx / len, y: dy / len };
+    const dot = dir.x * anchorSide.normal.nx + dir.y * anchorSide.normal.ny;
+    if (!best || dot > best.dot) best = { dot, nb, dir };
+  });
+
+  if (!best || best.dot < 0.2) {
+    rod.mesh.visible = false;
+    return;
+  }
+  rod.mesh.visible = true;
+
+  const nb = best.nb;
+  const neighborSideIdx = nearestSideIndex({ x: anchor.x - nb.x, y: anchor.y - nb.y });
+  const nbSide = sideMidpoint(nb, neighborSideIdx);
+
+  // Keep a fixed rod length and align parallel to the anchor side
+  const scale = 1;
+  const rodAngle = anchorSide.tangentAngle;
+  const edgeOffset = 0.02;
+
+  // Place the rod right on the anchor edge (slightly offset outward along the normal)
+  const posX = anchorSide.midX + anchorSide.normal.nx * edgeOffset;
+  const posY = anchorSide.midY + anchorSide.normal.ny * edgeOffset;
+
+  rod.mesh.position.set(posX, posY, HEX_HEIGHT / 2 + 0.06);
+  rod.mesh.rotation.set(0, 0, rodAngle);
+  rod.mesh.scale.set(scale, 1, 1);
+
+  updateYarnLine();
+}
+
+updateRod();
+
+// Per-carrier rotation controls
+const ROTATION_STEP = Math.PI / 3; // 60 deg per step
+let selected = carriers[0] ?? null;
+
+function rotateCarrier(carrier, delta) {
+  if (!carrier) return;
+  carrier.rotation += delta;
+  carrier.group.rotation.set(0, 0, carrier.rotation);
+  updateRod();
+}
+
+// Simple picking via raycaster to select a carrier (and click to rotate)
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+function onPointerDown(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObjects(carrierGroup.children, true);
+  if (hit.length > 0) {
+    const carrier = carriers.find((c) => c.group === hit[0].object.parent || c.group === hit[0].object);
+    if (carrier) {
+      selected = carrier;
+      // left click rotates CW, right click (button 2) rotates CCW
+      if (event.button === 0) rotateCarrier(selected, -ROTATION_STEP);
+      if (event.button === 2) rotateCarrier(selected, ROTATION_STEP);
+    }
+  }
+}
+renderer.domElement.addEventListener("pointerdown", onPointerDown);
+renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// Keyboard controls for selected carrier
+window.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight") rotateCarrier(selected, -ROTATION_STEP); // CW
+  if (e.key === "ArrowLeft") rotateCarrier(selected, ROTATION_STEP);  // CCW
+});
+
+// Fit and tilt
+carrierGroup.rotation.set(0, 0, 0);
+
+function fitCamera() {
+  const box = new THREE.Box3().setFromObject(rigGroup);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y);
+  const dist = maxDim * 1.8;
+  camera.position.set(center.x, center.y - dist, dist * 0.6);
+  camera.up.set(0, 0, 1);
+  camera.lookAt(center);
+}
+fitCamera();
+
+window.addEventListener("resize", () => {
   const w = window.innerWidth;
   const h = window.innerHeight;
   renderer.setSize(w, h, false);
-}
-window.addEventListener("resize", onResize);
-onResize();
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+});
 
-// ---------- Render loop ----------
 function animate() {
   requestAnimationFrame(animate);
-
   renderer.render(scene, camera);
 }
 animate();
