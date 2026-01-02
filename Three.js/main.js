@@ -110,6 +110,15 @@ coords.forEach(({ q, r }) => {
   );
   dot.position.set(x, y, 0.01);
   carrierGroup.add(dot);
+
+  // Orientation marker: small dot near the "top" edge to show facing direction
+  const orientDot = new THREE.Mesh(
+    new THREE.CircleGeometry(0.05, 12),
+    new THREE.MeshBasicMaterial({ color: 0x1f3b1f })
+  );
+  const orientOffset = hexRadius * 0.7;
+  orientDot.position.set(x, y + orientOffset, 0.02);
+  carrierGroup.add(orientDot);
 });
 
 // Center the group in view
